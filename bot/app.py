@@ -17,7 +17,7 @@ from langchain_core.output_parsers import StrOutputParser
 from pinecone import Pinecone
 
 # --------------------------------------------------
-# 🔐 LOAD ENV
+# LOAD ENV
 # --------------------------------------------------
 load_dotenv()
 
@@ -30,7 +30,7 @@ if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
     st.stop()
 
 # --------------------------------------------------
-# 📦 NAMESPACE
+# NAMESPACE
 # --------------------------------------------------
 uploaded_pdf = st.file_uploader(
     "Upload a PDF",
@@ -57,7 +57,7 @@ if st.session_state.active_pdf != pdf_name:
 NAMESPACE = pdf_name
 
 # --------------------------------------------------
-# 🔍 PINECONE INIT + DUPLICATION CHECK
+# PINECONE INIT + DUPLICATION CHECK
 # --------------------------------------------------
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
@@ -76,7 +76,7 @@ else:
     st.warning("Embedding PDF for the first time")
 
 # --------------------------------------------------
-# 📘 LOAD VECTORSTORE (CACHED)
+# LOAD VECTORSTORE (CACHED)
 # --------------------------------------------------
 @st.cache_resource
 def load_vectorstore(pdf_name, uploaded_pdf):
@@ -121,13 +121,13 @@ vectorstore = load_vectorstore(pdf_name, uploaded_pdf)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
 # --------------------------------------------------
-# 📄 CONTEXT FORMATTER
+# CONTEXT FORMATTER
 # --------------------------------------------------
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs[:3])
 
 # --------------------------------------------------
-# 🤖 LLM
+# LLM
 # --------------------------------------------------
 endpoint = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
@@ -140,7 +140,7 @@ endpoint = HuggingFaceEndpoint(
 llm = ChatHuggingFace(llm=endpoint)
 
 # --------------------------------------------------
-# 🧾 PROMPT
+# PROMPT
 # --------------------------------------------------
 prompt = ChatPromptTemplate.from_messages(
     [
@@ -160,7 +160,7 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 # --------------------------------------------------
-# 🔗 RAG CHAIN
+# RAG CHAIN
 # --------------------------------------------------
 rag_chain = (
     {
@@ -173,7 +173,7 @@ rag_chain = (
 )
 
 # --------------------------------------------------
-# 🛡️ OUTPUT GUARD
+# OUTPUT GUARD
 # --------------------------------------------------
 def enforce_output(text: str) -> str:
     text = text.strip()
@@ -182,20 +182,20 @@ def enforce_output(text: str) -> str:
     return text.split(".")[0].strip() + "."
 
 # --------------------------------------------------
-# 💬 CHAT UI (FIXED)
+# CHAT UI (FIXED)
 # --------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 1️⃣ Render chat history
+# 1️. Render chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 2️⃣ Take new input
+# 2️. Take new input
 query = st.chat_input("Ask a question from the PDF...")
 
-# 3️⃣ Handle new message ONLY once
+# 3️. Handle new message ONLY once
 if query:
     # store user message
     st.session_state.messages.append(
