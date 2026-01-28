@@ -43,19 +43,18 @@ if not uploaded_pdf:
     st.stop()
 
 pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
+pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
+
+if "active_pdf" not in st.session_state:
+    st.session_state.active_pdf = pdf_name
+
+# If user uploads a new PDF
+if st.session_state.active_pdf != pdf_name:
+    st.session_state.active_pdf = pdf_name
+    st.session_state.messages = []          # clear chat
+    st.cache_resource.clear()               # clear vectorstore cache
+
 NAMESPACE = pdf_name
-
-# --------------------------------------------------
-# 🧠 UI
-# --------------------------------------------------
-st.title("📘 PDF QA BOT")
-st.caption("Upload a PDF and ask factual questions")
-
-uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
-
-if not uploaded_pdf:
-    st.info("Please upload a PDF to continue.")
-    st.stop()
 
 # --------------------------------------------------
 # 🔍 PINECONE INIT + DUPLICATION CHECK
@@ -80,7 +79,9 @@ else:
 # 📘 LOAD VECTORSTORE (CACHED)
 # --------------------------------------------------
 @st.cache_resource
-def load_vectorstore(uploaded_pdf):
+def load_vectorstore(pdf_name, uploaded_pdf):
+    _ = pdf_name  # ensures cache invalidation per PDF
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_pdf.read())
         pdf_path = tmp.name
@@ -115,7 +116,8 @@ def load_vectorstore(uploaded_pdf):
     return vectorstore
 
 
-vectorstore = load_vectorstore(uploaded_pdf)
+
+vectorstore = load_vectorstore(pdf_name, uploaded_pdf)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
 # --------------------------------------------------
