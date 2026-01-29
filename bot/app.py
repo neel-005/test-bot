@@ -216,4 +216,3 @@ if query:
     st.session_state.messages.append(
         {"role": "assistant", "content": final_answer}
     )
-
