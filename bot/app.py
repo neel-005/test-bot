@@ -90,8 +90,8 @@ def load_vectorstore(pdf_name, uploaded_pdf):
     documents = loader.load()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1200,
-        chunk_overlap=150
+        chunk_size=1000,
+        chunk_overlap=120
     )
     docs = splitter.split_documents(documents)
 
@@ -118,7 +118,7 @@ def load_vectorstore(pdf_name, uploaded_pdf):
 
 
 vectorstore = load_vectorstore(pdf_name, uploaded_pdf)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
+retriever = vectorstore.as_retriever(search_kwargs={"k": 7})
 
 # --------------------------------------------------
 # CONTEXT FORMATTER
