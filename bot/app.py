@@ -23,41 +23,35 @@ load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-PINECONE_INDEX_NAME = "mycode"
+PINECONE_INDEX_NAME = "bot768"
 
 if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
     st.error("API keys not found. Check your .env file.")
     st.stop()
 
 # --------------------------------------------------
-# NAMESPACE
+# FILE UPLOAD
 # --------------------------------------------------
-uploaded_pdf = st.file_uploader(
-    "Upload a PDF",
-    type=["pdf"],
-    key="pdf_uploader"
-)
+uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
 
 if not uploaded_pdf:
     st.info("Please upload a PDF to continue.")
     st.stop()
 
 pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
-pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
 
 if "active_pdf" not in st.session_state:
     st.session_state.active_pdf = pdf_name
 
-# If user uploads a new PDF
 if st.session_state.active_pdf != pdf_name:
     st.session_state.active_pdf = pdf_name
-    st.session_state.messages = []          # clear chat
-    st.cache_resource.clear()               # clear vectorstore cache
+    st.session_state.messages = []
+    st.cache_resource.clear()
 
 NAMESPACE = pdf_name
 
 # --------------------------------------------------
-# PINECONE INIT + DUPLICATION CHECK
+# PINECONE INIT
 # --------------------------------------------------
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
@@ -70,18 +64,11 @@ SKIP_EMBEDDING = (
     and namespaces[NAMESPACE].get("vector_count", 0) > 0
 )
 
-if SKIP_EMBEDDING:
-    st.info("Using existing vectors from Pinecone")
-else:
-    st.warning("Embedding PDF for the first time")
-
 # --------------------------------------------------
-# LOAD VECTORSTORE (CACHED)
+# VECTORSTORE (CACHED)
 # --------------------------------------------------
 @st.cache_resource
 def load_vectorstore(pdf_name, uploaded_pdf):
-    _ = pdf_name  # ensures cache invalidation per PDF
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_pdf.read())
         pdf_path = tmp.name
@@ -90,13 +77,13 @@ def load_vectorstore(pdf_name, uploaded_pdf):
     documents = loader.load()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=120
+        chunk_size=1200,
+        chunk_overlap=200
     )
     docs = splitter.split_documents(documents)
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="sentence-transformers/all-mpnet-base-v2"
     )
 
     if not SKIP_EMBEDDING:
@@ -115,16 +102,22 @@ def load_vectorstore(pdf_name, uploaded_pdf):
 
     return vectorstore
 
-
-
 vectorstore = load_vectorstore(pdf_name, uploaded_pdf)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 7})
+
+retriever = vectorstore.as_retriever(
+    search_type="mmr",
+    search_kwargs={
+        "k": 6,
+        "fetch_k": 20,
+        "lambda_mult": 0.6
+    }
+)
 
 # --------------------------------------------------
 # CONTEXT FORMATTER
 # --------------------------------------------------
 def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs[:3])
+    return "\n\n".join(doc.page_content for doc in docs)
 
 # --------------------------------------------------
 # LLM
@@ -132,8 +125,8 @@ def format_docs(docs):
 endpoint = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
     task="conversational",
-    temperature=0,
-    max_new_tokens=100,
+    temperature=0.2,
+    max_new_tokens=450,
     huggingfacehub_api_token=HUGGINGFACE_API_KEY
 )
 
@@ -146,11 +139,24 @@ prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a factual question answering system.\n"
-            "- Use ONLY the given context.\n"
-            "- Answer in EXACTLY ONE sentence.\n"
-            "- If not found, say:\n"
-            "  Answer not found in the PDF."
+            "You are a strict literature question-answering system.\n\n"
+
+            "RULES:\n"
+            "1. Answer ONLY what the question asks.\n"
+            "2. Use ONLY the provided context.\n"
+            "3. Do NOT mix events from different chapters or time periods.\n"
+            "4. If the context shows an early assumption that is later disproved, "
+            "state only what is true at that point in the story.\n"
+            "5. If the text gives a definite answer, give it directly. Do NOT hedge.\n"
+            "6. Do NOT include later events unless the question explicitly asks for them.\n"
+            "7. Do NOT add interpretation, analysis, or personal commentary.\n"
+            "8. If the answer is not present anywhere in the context, say exactly:\n"
+            "   Answer not found in the PDF.\n\n"
+
+            "STYLE:\n"
+            "- Be concise and factual.\n"
+            "- Prefer exact statements from the text over summaries.\n"
+            "- One to three sentences maximum.\n"
         ),
         (
             "human",
@@ -158,6 +164,7 @@ prompt = ChatPromptTemplate.from_messages(
         )
     ]
 )
+
 
 # --------------------------------------------------
 # RAG CHAIN
@@ -173,46 +180,26 @@ rag_chain = (
 )
 
 # --------------------------------------------------
-# OUTPUT GUARD
-# --------------------------------------------------
-def enforce_output(text: str) -> str:
-    text = text.strip()
-    if "Answer not found" in text:
-        return "Answer not found in the PDF."
-    return text.split(".")[0].strip() + "."
-
-# --------------------------------------------------
-# CHAT UI (FIXED)
+# CHAT UI
 # --------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 1️. Render chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 2️. Take new input
 query = st.chat_input("Ask a question from the PDF...")
 
-# 3️. Handle new message ONLY once
 if query:
-    # store user message
-    st.session_state.messages.append(
-        {"role": "user", "content": query}
-    )
+    st.session_state.messages.append({"role": "user", "content": query})
 
     with st.chat_message("user"):
         st.markdown(query)
 
-    # generate assistant reply
     with st.chat_message("assistant"):
         with st.spinner("Searching PDF..."):
             response = rag_chain.invoke(query)
-            final_answer = enforce_output(response)
-            st.markdown(final_answer)
+            st.markdown(response)
 
-    # store assistant message ONCE
-    st.session_state.messages.append(
-        {"role": "assistant", "content": final_answer}
-    )
+    st.session_state.messages.append({"role": "assistant", "content": response})
