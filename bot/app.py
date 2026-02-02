@@ -235,7 +235,7 @@ from pinecone import Pinecone
 # PAGE CONFIG (UI)
 # --------------------------------------------------
 st.set_page_config(
-    page_title="PDF Literature Q&A Bot",
+    page_title="PDF Q&A Bot",
     page_icon="📘",
     layout="wide"
 )
