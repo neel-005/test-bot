@@ -20,12 +20,12 @@ from pinecone import Pinecone
 # PAGE CONFIG (UI)
 # --------------------------------------------------
 st.set_page_config(
-    page_title="PDF Literature Q&A Bot",
+    page_title="PDF Q&A Bot",
     page_icon="📘",
     layout="wide"
 )
 
-st.title("📘 PDF Literature Question–Answer Bot")
+st.title("PDF Question–Answer Bot")
 st.caption("Ask questions strictly from the uploaded PDF")
 
 # --------------------------------------------------
@@ -45,14 +45,14 @@ if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
 # SIDEBAR (UPLOAD + CONTROLS)
 # --------------------------------------------------
 with st.sidebar:
-    st.header("📄 PDF Settings")
+    st.header("PDF Settings")
 
     uploaded_pdf = st.file_uploader(
         "Upload a PDF",
         type=["pdf"]
     )
 
-    if st.button("🧹 Clear chat"):
+    if st.button("Clear chat"):
         st.session_state.messages = []
         st.rerun()
 
@@ -200,7 +200,7 @@ rag_chain = (
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-st.subheader("💬 Ask a question")
+st.subheader("Ask a question")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
