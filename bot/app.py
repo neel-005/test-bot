@@ -12,7 +12,6 @@ from langchain_huggingface import (
 )
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from pinecone import Pinecone
 
@@ -39,7 +38,11 @@ if not uploaded_pdf:
     st.stop()
 
 pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
+NAMESPACE = pdf_name
 
+# --------------------------------------------------
+# SESSION RESET ON NEW PDF
+# --------------------------------------------------
 if "active_pdf" not in st.session_state:
     st.session_state.active_pdf = pdf_name
 
@@ -47,8 +50,6 @@ if st.session_state.active_pdf != pdf_name:
     st.session_state.active_pdf = pdf_name
     st.session_state.messages = []
     st.cache_resource.clear()
-
-NAMESPACE = pdf_name
 
 # --------------------------------------------------
 # PINECONE INIT
@@ -68,7 +69,7 @@ SKIP_EMBEDDING = (
 # VECTORSTORE (CACHED)
 # --------------------------------------------------
 @st.cache_resource
-def load_vectorstore(pdf_name, uploaded_pdf):
+def load_vectorstore(uploaded_pdf):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_pdf.read())
         pdf_path = tmp.name
@@ -102,21 +103,14 @@ def load_vectorstore(pdf_name, uploaded_pdf):
 
     return vectorstore
 
-vectorstore = load_vectorstore(pdf_name, uploaded_pdf)
-
-retriever = vectorstore.as_retriever(
-    search_type="mmr",
-    search_kwargs={
-        "k": 6,
-        "fetch_k": 20,
-        "lambda_mult": 0.6
-    }
-)
+vectorstore = load_vectorstore(uploaded_pdf)
 
 # --------------------------------------------------
 # CONTEXT FORMATTER
 # --------------------------------------------------
 def format_docs(docs):
+    if not docs:
+        return ""
     return "\n\n".join(doc.page_content for doc in docs)
 
 # --------------------------------------------------
@@ -124,9 +118,9 @@ def format_docs(docs):
 # --------------------------------------------------
 endpoint = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-    task="conversational",
-    temperature=0.2,
-    max_new_tokens=450,
+    task="text-generation",
+    temperature=0.0,
+    max_new_tokens=200,
     huggingfacehub_api_token=HUGGINGFACE_API_KEY
 )
 
@@ -139,24 +133,14 @@ prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a strict literature question-answering system.\n\n"
-
+            "You are a strict extractive question-answering system.\n\n"
             "RULES:\n"
-            "1. Answer ONLY what the question asks.\n"
-            "2. Use ONLY the provided context.\n"
-            "3. Do NOT mix events from different chapters or time periods.\n"
-            "4. If the context shows an early assumption that is later disproved, "
-            "state only what is true at that point in the story.\n"
-            "5. If the text gives a definite answer, give it directly. Do NOT hedge.\n"
-            "6. Do NOT include later events unless the question explicitly asks for them.\n"
-            "7. Do NOT add interpretation, analysis, or personal commentary.\n"
-            "8. If the answer is not present anywhere in the context, say exactly:\n"
-            "   Answer not found in the PDF.\n\n"
-
-            "STYLE:\n"
-            "- Be concise and factual.\n"
-            "- Prefer exact statements from the text over summaries.\n"
-            "- One to three sentences maximum.\n"
+            "1. Use ONLY the provided context.\n"
+            "2. Do NOT use prior knowledge.\n"
+            "3. Do NOT infer or assume missing information.\n"
+            "4. If the answer is not explicitly stated, output exactly:\n"
+            "Answer not found in the context.\n"
+            "5. One or two sentences maximum.\n"
         ),
         (
             "human",
@@ -165,19 +149,7 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-# --------------------------------------------------
-# RAG CHAIN
-# --------------------------------------------------
-rag_chain = (
-    {
-        "context": retriever | format_docs,
-        "question": RunnablePassthrough()
-    }
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+rag_chain = prompt | llm | StrOutputParser()
 
 # --------------------------------------------------
 # CHAT UI
@@ -192,21 +164,30 @@ for msg in st.session_state.messages:
 query = st.chat_input("Ask a question from the PDF...")
 
 if query:
-    st.session_state.messages.append({"role": "user", "content": query})
+    st.session_state.messages.append(
+        {"role": "user", "content": query}
+    )
 
     with st.chat_message("user"):
         st.markdown(query)
 
-with st.chat_message("assistant"):
-    with st.spinner("Searching PDF..."):
-        docs = retriever.invoke(query)
-        context = format_docs(docs)
+    with st.chat_message("assistant"):
+        with st.spinner("Searching PDF..."):
+            docs = vectorstore.similarity_search(query, k=4)
+            context = format_docs(docs)
 
-        if not context.strip():
-            response = "Answer not found in the context."
-        else:
-            response = rag_chain.invoke(query)
+            if not context.strip():
+                response = "Answer not found in the context."
+            else:
+                response = rag_chain.invoke(
+                    {
+                        "context": context,
+                        "question": query
+                    }
+                )
 
-        st.markdown(response)
-        
-    st.session_state.messages.append({"role": "assistant", "content": response})
+            st.markdown(response)
+
+    st.session_state.messages.append(
+        {"role": "assistant", "content": response}
+    )
