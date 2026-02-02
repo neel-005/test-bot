@@ -17,6 +17,18 @@ from langchain_core.output_parsers import StrOutputParser
 from pinecone import Pinecone
 
 # --------------------------------------------------
+# PAGE CONFIG (UI)
+# --------------------------------------------------
+st.set_page_config(
+    page_title="PDF Literature Q&A Bot",
+    page_icon="📘",
+    layout="wide"
+)
+
+st.title("📘 PDF Literature Question–Answer Bot")
+st.caption("Ask questions strictly from the uploaded PDF")
+
+# --------------------------------------------------
 # LOAD ENV
 # --------------------------------------------------
 load_dotenv()
@@ -30,14 +42,30 @@ if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
     st.stop()
 
 # --------------------------------------------------
-# FILE UPLOAD
+# SIDEBAR (UPLOAD + CONTROLS)
 # --------------------------------------------------
-uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
+with st.sidebar:
+    st.header("📄 PDF Settings")
+
+    uploaded_pdf = st.file_uploader(
+        "Upload a PDF",
+        type=["pdf"]
+    )
+
+    if st.button("🧹 Clear chat"):
+        st.session_state.messages = []
+        st.rerun()
+
+    st.divider()
+    st.caption("Only answers from the PDF are allowed.")
 
 if not uploaded_pdf:
-    st.info("Please upload a PDF to continue.")
+    st.info("Upload a PDF from the sidebar to begin.")
     st.stop()
 
+# --------------------------------------------------
+# PDF SESSION HANDLING
+# --------------------------------------------------
 pdf_name = uploaded_pdf.name.replace(" ", "_").replace(".", "_").lower()
 
 if "active_pdf" not in st.session_state:
@@ -49,6 +77,8 @@ if st.session_state.active_pdf != pdf_name:
     st.cache_resource.clear()
 
 NAMESPACE = pdf_name
+
+st.success(f"Active PDF: **{uploaded_pdf.name}**")
 
 # --------------------------------------------------
 # PINECONE INIT
@@ -140,23 +170,9 @@ prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "You are a strict literature question-answering system.\n\n"
-
-            "RULES:\n"
-            "1. Answer ONLY what the question asks.\n"
-            "2. Use ONLY the provided context.\n"
-            "3. Do NOT mix events from different chapters or time periods.\n"
-            "4. If the context shows an early assumption that is later disproved, "
-            "state only what is true at that point in the story.\n"
-            "5. If the text gives a definite answer, give it directly. Do NOT hedge.\n"
-            "6. Do NOT include later events unless the question explicitly asks for them.\n"
-            "7. Do NOT add interpretation, analysis, or personal commentary.\n"
-            "8. If the answer is not present anywhere in the context, say exactly:\n"
-            "   Answer not found in the PDF.\n\n"
-
-            "STYLE:\n"
-            "- Be concise and factual.\n"
-            "- Prefer exact statements from the text over summaries.\n"
-            "- One to three sentences maximum.\n"
+            "Use ONLY the provided context.\n"
+            "If the answer is missing, say:\n"
+            "Answer not found in the context.\n"
         ),
         (
             "human",
@@ -164,7 +180,6 @@ prompt = ChatPromptTemplate.from_messages(
         )
     ]
 )
-
 
 # --------------------------------------------------
 # RAG CHAIN
@@ -185,28 +200,27 @@ rag_chain = (
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+st.subheader("💬 Ask a question")
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-query = st.chat_input("Ask a question from the PDF...")
+query = st.chat_input("Type your question here...")
 
 if query:
-    st.session_state.messages.append({"role": "user", "content": query})
+    st.session_state.messages.append(
+        {"role": "user", "content": query}
+    )
 
     with st.chat_message("user"):
         st.markdown(query)
 
-with st.chat_message("assistant"):
-    with st.spinner("Searching PDF..."):
-        docs = retriever.get_relevant_documents(query)
-        context = format_docs(docs)
-
-        if not context.strip():
-            response = "Answer not found in the context."
-        else:
+    with st.chat_message("assistant"):
+        with st.spinner("Searching the PDF..."):
             response = rag_chain.invoke(query)
+            st.markdown(response)
 
-        st.markdown(response)
-
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append(
+        {"role": "assistant", "content": response}
+    )
