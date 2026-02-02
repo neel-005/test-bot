@@ -197,9 +197,16 @@ if query:
     with st.chat_message("user"):
         st.markdown(query)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching PDF..."):
+with st.chat_message("assistant"):
+    with st.spinner("Searching PDF..."):
+        docs = retriever.get_relevant_documents(query)
+        context = format_docs(docs)
+
+        if not context.strip():
+            response = "Answer not found in the context."
+        else:
             response = rag_chain.invoke(query)
-            st.markdown(response)
+
+        st.markdown(response)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
