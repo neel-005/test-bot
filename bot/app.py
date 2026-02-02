@@ -199,7 +199,7 @@ if query:
 
 with st.chat_message("assistant"):
     with st.spinner("Searching PDF..."):
-        docs = retriever.get_relevant_documents(query)
+        docs = retriever.invoke(query)
         context = format_docs(docs)
 
         if not context.strip():
@@ -208,5 +208,5 @@ with st.chat_message("assistant"):
             response = rag_chain.invoke(query)
 
         st.markdown(response)
-
+        
     st.session_state.messages.append({"role": "assistant", "content": response})
