@@ -55,11 +55,9 @@ embeddings = HuggingFaceEmbeddings(
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
-with st.sidebar:
-    uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
-    if st.button("Clear Chat"):
-        st.session_state.clear()
-        st.rerun()
+if st.button("Clear Chat"):
+    st.session_state.messages = []
+    st.rerun()
 
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
@@ -171,29 +169,38 @@ def answer_question(question):
     return answer + f"\n\n📄 Source: Page {page}"
 
 # --------------------------------------------------
-# CHAT LOOP
+# CHAT LOOP (FIXED)
 # --------------------------------------------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# Display chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
+# User input
 user_input = st.chat_input("Ask a question about the PDF...")
 
 if user_input:
-
+    # Add user message immediately
     st.session_state.messages.append({
         "role": "user",
         "content": user_input
     })
 
+    # Display user message instantly
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # Generate assistant response
     with st.chat_message("assistant"):
         with st.spinner("Searching document..."):
             answer = answer_question(user_input)
             st.markdown(answer)
 
+    # Save assistant message
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer
