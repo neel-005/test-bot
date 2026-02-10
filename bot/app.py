@@ -96,35 +96,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Advanced settings
-    with st.expander("🔧 Advanced Settings"):
-        retrieval_k = st.slider(
-            "Number of chunks to retrieve",
-            min_value=3,
-            max_value=10,
-            value=TOP_K_RETRIEVAL,
-            help="More chunks = more context but slower"
-        )
-        
-        context_k = st.slider(
-            "Chunks to use for answer",
-            min_value=2,
-            max_value=5,
-            value=TOP_K_CONTEXT,
-            help="Chunks sent to the LLM"
-        )
-        
-        temperature = st.slider(
-            "Response creativity",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.1,
-            step=0.1,
-            help="0 = factual, 1 = creative"
-        )
-    
-    st.divider()
-    
     if st.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
@@ -213,7 +184,7 @@ def get_llm(_temperature: float = 0.1):
         )
     )
 
-llm = get_llm(temperature)
+llm = get_llm(0.1)
 
 # --------------------------------------------------
 # ENHANCED PROMPT TEMPLATE
@@ -342,8 +313,8 @@ if user_input:
         with st.spinner("Searching document..."):
             answer = answer_question(
                 user_input,
-                k_retrieval=retrieval_k,
-                k_context=context_k
+                k_retrieval=TOP_K_RETRIEVAL,
+                k_context=TOP_K_CONTEXT
             )
         st.markdown(answer)
     
