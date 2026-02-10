@@ -59,8 +59,8 @@ with st.sidebar:
     uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 
     if st.button("Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
+    st.session_state.messages = []
+
 
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
@@ -174,31 +174,37 @@ def answer_question(question):
     return answer + f"\n\n📄 Source: Page(s) {', '.join(map(str, pages))}"
 
 # --------------------------------------------------
-# CHAT LOOP
+# STABLE CHAT LOOP
 # --------------------------------------------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display history
+# Render previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-user_input = st.chat_input("Ask a question about the PDF...")
+# Get user input
+prompt_input = st.chat_input("Ask a question about the PDF...")
 
-if user_input:
+if prompt_input:
 
+    # Add user message
     st.session_state.messages.append({
         "role": "user",
-        "content": user_input
+        "content": prompt_input
     })
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching document..."):
-            answer = answer_question(user_input)
-            st.markdown(answer)
+    # Generate assistant response
+    answer = answer_question(prompt_input)
 
+    # Add assistant message
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer
     })
+
+    # Immediately render the latest messages
+    with st.chat_message("assistant"):
+        st.markdown(answer)
