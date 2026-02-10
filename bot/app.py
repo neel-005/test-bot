@@ -6,7 +6,11 @@ from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_huggingface import (
+    HuggingFaceEmbeddings,
+    HuggingFaceEndpoint,
+    ChatHuggingFace,
+)
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.prompts import ChatPromptTemplate
 from pinecone import Pinecone, ServerlessSpec
@@ -40,13 +44,13 @@ if INDEX_NAME not in [i["name"] for i in pc.list_indexes()]:
         name=INDEX_NAME,
         dimension=EMBEDDING_DIM,
         metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
     )
 
 index = pc.Index(INDEX_NAME)
 
 # --------------------------------------------------
-# EMBEDDINGS
+# EMBEDDINGS (LIGHTWEIGHT + STABLE)
 # --------------------------------------------------
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -60,14 +64,14 @@ with st.sidebar:
 
     if st.button("Clear Chat"):
         st.session_state.messages = []
-
+        st.rerun()
 
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
     st.stop()
 
 # --------------------------------------------------
-# SAVE FILE
+# SAVE PDF TEMP
 # --------------------------------------------------
 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
     tmp.write(uploaded_pdf.read())
@@ -88,14 +92,14 @@ def load_vectorstore(pdf_path, namespace):
         return PineconeVectorStore.from_existing_index(
             index_name=INDEX_NAME,
             embedding=embeddings,
-            namespace=namespace
+            namespace=namespace,
         )
 
     docs = PyPDFLoader(pdf_path).load()
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
-        chunk_overlap=100
+        chunk_overlap=100,
     )
 
     chunks = splitter.split_documents(docs)
@@ -104,7 +108,7 @@ def load_vectorstore(pdf_path, namespace):
         documents=chunks,
         embedding=embeddings,
         index_name=INDEX_NAME,
-        namespace=namespace
+        namespace=namespace,
     )
 
 vectorstore = load_vectorstore(pdf_path, namespace)
@@ -117,24 +121,30 @@ llm = ChatHuggingFace(
         repo_id="mistralai/Mistral-7B-Instruct-v0.2",
         temperature=0.0,
         max_new_tokens=300,
-        huggingfacehub_api_token=HUGGINGFACE_API_KEY
+        huggingfacehub_api_token=HUGGINGFACE_API_KEY,
     )
 )
 
 # --------------------------------------------------
 # STRICT PROMPT
 # --------------------------------------------------
-prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a strict document extractor.\n"
-     "Use ONLY text from the context.\n"
-     "Return ONLY the exact relevant sentences.\n"
-     "Do not add explanations.\n"
-     "If the answer is not explicitly written, reply exactly:\n"
-     "'I cannot find this information in the document.'"
-    ),
-    ("human", "Context:\n{context}\n\nQuestion: {question}\n\nAnswer:")
-])
+prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a strict document extractor.\n"
+            "Use ONLY text from the context.\n"
+            "Return ONLY exact relevant sentences.\n"
+            "Do not explain or summarize.\n"
+            "If the answer is not explicitly written, reply exactly:\n"
+            "'I cannot find this information in the document.'",
+        ),
+        (
+            "human",
+            "Context:\n{context}\n\nQuestion: {question}\n\nAnswer:",
+        ),
+    ]
+)
 
 # --------------------------------------------------
 # ANSWER FUNCTION
@@ -149,10 +159,10 @@ def answer_question(question):
     if not filtered:
         return "I cannot find this information in the document."
 
-    # Sort by similarity (lower is better)
+    # Sort best match first
     filtered = sorted(filtered, key=lambda x: x[1])
 
-    # Use top 2 strong chunks max
+    # Use top 2 strong matches
     strong_docs = [doc for doc, score in filtered[:2]]
 
     context = "\n---\n".join([doc.page_content for doc in strong_docs])
@@ -169,42 +179,39 @@ def answer_question(question):
     if "cannot find" in answer.lower():
         return "I cannot find this information in the document."
 
-    pages = sorted({doc.metadata.get("page", 0) + 1 for doc in strong_docs})[:3]
+    pages = sorted(
+        {doc.metadata.get("page", 0) + 1 for doc in strong_docs}
+    )[:3]
 
     return answer + f"\n\n📄 Source: Page(s) {', '.join(map(str, pages))}"
 
 # --------------------------------------------------
 # STABLE CHAT LOOP
 # --------------------------------------------------
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Render previous messages
+# Render history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Get user input
-prompt_input = st.chat_input("Ask a question about the PDF...")
+user_input = st.chat_input("Ask a question about the PDF...")
 
-if prompt_input:
+if user_input:
 
-    # Add user message
-    st.session_state.messages.append({
-        "role": "user",
-        "content": prompt_input
-    })
+    # Store user message
+    st.session_state.messages.append(
+        {"role": "user", "content": user_input}
+    )
 
-    # Generate assistant response
-    answer = answer_question(prompt_input)
+    # Generate answer
+    answer = answer_question(user_input)
 
-    # Add assistant message
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer
-    })
+    # Store assistant response
+    st.session_state.messages.append(
+        {"role": "assistant", "content": answer}
+    )
 
-    # Immediately render the latest messages
-    with st.chat_message("assistant"):
-        st.markdown(answer)
+    # Rerun cleanly (prevents duplication)
+    st.rerun()
