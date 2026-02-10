@@ -38,11 +38,11 @@ INDEX_NAME = "pdf-qa-production"
 EMBEDDING_DIM = 384
 
 # Improved configuration
-CHUNK_SIZE = 800  # Larger chunks for better context
-CHUNK_OVERLAP = 200  # More overlap for continuity
-TOP_K_RETRIEVAL = 5  # Retrieve more candidates
-TOP_K_CONTEXT = 3  # Use best 3 for context
-SIMILARITY_THRESHOLD = 0.7  # Minimum relevance score
+CHUNK_SIZE = 1000  # Larger chunks for better context
+CHUNK_OVERLAP = 250  # More overlap for continuity
+TOP_K_RETRIEVAL = 6  # Retrieve more candidates
+TOP_K_CONTEXT = 4  # Use best 4 for context
+SIMILARITY_THRESHOLD = 0.65  # Slightly more permissive threshold
 
 if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
     st.error("❌ Missing API keys. Please check your .env file.")
@@ -171,20 +171,20 @@ vectorstore = load_vectorstore(pdf_path, namespace)
 # LLM WITH BETTER CONFIG
 # --------------------------------------------------
 @st.cache_resource
-def get_llm(_temperature: float = 0.1):
+def get_llm(_temperature: float = 0.0):
     """Initialize LLM with configurable temperature"""
     return ChatHuggingFace(
         llm=HuggingFaceEndpoint(
             repo_id="mistralai/Mistral-7B-Instruct-v0.2",
             temperature=_temperature,
-            max_new_tokens=400,
-            top_p=0.95,
-            repetition_penalty=1.1,
+            max_new_tokens=250,
+            top_p=0.9,
+            repetition_penalty=1.15,
             huggingfacehub_api_token=HUGGINGFACE_API_KEY,
         )
     )
 
-llm = get_llm(0.1)
+llm = get_llm(0.0)
 
 # --------------------------------------------------
 # ENHANCED PROMPT TEMPLATE
@@ -192,27 +192,27 @@ llm = get_llm(0.1)
 prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """You are an expert document analyst that extracts precise information from documents.
+        """You are a precise document assistant. Extract exact information from the provided context.
 
-STRICT RULES:
-1. Answer ONLY using information explicitly stated in the provided context
-2. Quote or closely paraphrase exact text from the context
-3. If the answer spans multiple sentences, include all relevant parts
-4. If information is partially available, provide what exists and note what's missing
-5. If the answer is not in the context, respond EXACTLY: "I cannot find this information in the document."
-6. Do not add interpretation, assumptions, or external knowledge
-7. Be concise but complete - include all relevant details from the context
+RULES:
+1. Give SHORT, DIRECT answers using only the context provided
+2. Use the exact words from the document when possible
+3. Do NOT mention page numbers, context, or sources in your answer
+4. Do NOT say "according to the context" or "the document states"
+5. If the answer is not in the context, say ONLY: "I cannot find this information in the document."
+6. Do NOT explain, interpret, or add external knowledge
+7. Keep answers under 3 sentences unless absolutely necessary
 
-Context passages are provided below with page numbers."""
+Just answer the question directly."""
     ),
     (
         "human",
-        """Context from the document:
+        """Context:
 {context}
 
 Question: {question}
 
-Provide a direct answer based solely on the context above:"""
+Answer directly and concisely:"""
     ),
 ])
 
@@ -247,14 +247,13 @@ def answer_question(question: str, k_retrieval: int = 5, k_context: int = 3) -> 
         # Take top k_context chunks
         top_docs = [doc for doc, score in sorted_results[:k_context]]
         
-        # Build context with page numbers
+        # Build context without page labels (we'll add them to citation only)
         context_parts = []
         for doc in top_docs:
-            page_num = doc.metadata.get("page", 0) + 1
             content = doc.page_content.strip()
-            context_parts.append(f"[Page {page_num}]\n{content}")
+            context_parts.append(content)
         
-        context = "\n\n---\n\n".join(context_parts)
+        context = "\n\n".join(context_parts)
         
         # Generate answer
         response = llm.invoke(
@@ -263,12 +262,20 @@ def answer_question(question: str, k_retrieval: int = 5, k_context: int = 3) -> 
         
         answer = response.content.strip()
         
+        # Remove common LLM artifacts
+        answer = answer.replace("According to the context,", "").strip()
+        answer = answer.replace("According to the document,", "").strip()
+        answer = answer.replace("Based on the context,", "").strip()
+        answer = answer.replace("The document states that", "").strip()
+        answer = answer.replace("The context mentions that", "").strip()
+        
         # Check if model couldn't find answer
         if any(phrase in answer.lower() for phrase in [
             "cannot find",
             "not mentioned",
             "does not contain",
-            "no information"
+            "no information",
+            "not in the context"
         ]):
             return "I cannot find this information in the document."
         
@@ -276,11 +283,7 @@ def answer_question(question: str, k_retrieval: int = 5, k_context: int = 3) -> 
         pages = sorted(set(doc.metadata.get("page", 0) + 1 for doc in top_docs))
         page_str = ", ".join(map(str, pages[:5]))  # Limit to 5 pages
         
-        # Calculate average relevance score
-        avg_score = sum(score for _, score in sorted_results[:k_context]) / k_context
-        confidence = "High" if avg_score < 0.3 else "Medium" if avg_score < 0.5 else "Moderate"
-        
-        return f"{answer}\n\n📄 **Source:** Page(s) {page_str}\n🎯 **Confidence:** {confidence}"
+        return f"{answer}\n\n📄 **Source:** Page {page_str}"
     
     except Exception as e:
         st.error(f"Error generating answer: {str(e)}")
