@@ -151,26 +151,19 @@ prompt = ChatPromptTemplate.from_messages(
 # --------------------------------------------------
 def answer_question(question):
 
-    results = vectorstore.similarity_search_with_score(question, k=5)
+    # Retrieve top matches
+    results = vectorstore.similarity_search_with_score(question, k=4)
 
     if not results:
         return "I cannot find this information in the document."
 
-    # Sort by best similarity
+    # Sort by similarity (lower = better)
     results = sorted(results, key=lambda x: x[1])
 
-    best_score = results[0][1]
+    # Take top 2 chunks only
+    top_docs = [doc for doc, score in results[:2]]
 
-    # Keep only chunks close to best match
-    strong_docs = [
-        doc for doc, score in results
-        if score <= best_score + 0.15
-    ]
-
-    if not strong_docs:
-        return "I cannot find this information in the document."
-
-    context = "\n---\n".join([doc.page_content for doc in strong_docs[:2]])
+    context = "\n---\n".join([doc.page_content for doc in top_docs])
 
     try:
         response = llm.invoke(
@@ -185,7 +178,7 @@ def answer_question(question):
         return "I cannot find this information in the document."
 
     pages = sorted(
-        {doc.metadata.get("page", 0) + 1 for doc in strong_docs}
+        {doc.metadata.get("page", 0) + 1 for doc in top_docs}
     )[:3]
 
     return answer + f"\n\n📄 Source: Page(s) {', '.join(map(str, pages))}"
