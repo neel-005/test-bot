@@ -55,10 +55,14 @@ embeddings = HuggingFaceEmbeddings(
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
-if st.button("Clear Chat"):
-    st.session_state.messages = []
-    st.rerun()
+with st.sidebar:
+    uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
+    if st.button("Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
 
+# STOP if no PDF uploaded
+uploaded_pdf = st.file_uploader(...)
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
     st.stop()
