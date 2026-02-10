@@ -59,7 +59,7 @@ with st.sidebar:
     uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 
     if st.button("Clear Chat"):
-    st.session_state.messages = []
+        st.session_state.messages = []
 
 
 if not uploaded_pdf:
