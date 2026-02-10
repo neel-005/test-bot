@@ -62,7 +62,6 @@ with st.sidebar:
         st.rerun()
 
 # STOP if no PDF uploaded
-uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
     st.stop()
