@@ -151,21 +151,26 @@ prompt = ChatPromptTemplate.from_messages(
 # --------------------------------------------------
 def answer_question(question):
 
-    results = vectorstore.similarity_search_with_score(question, k=3)
+    results = vectorstore.similarity_search_with_score(question, k=5)
 
-    # Filter by similarity threshold
-    filtered = [(doc, score) for doc, score in results if score < 0.6]
-
-    if not filtered:
+    if not results:
         return "I cannot find this information in the document."
 
-    # Sort best match first
-    filtered = sorted(filtered, key=lambda x: x[1])
+    # Sort by best similarity
+    results = sorted(results, key=lambda x: x[1])
 
-    # Use top 2 strong matches
-    strong_docs = [doc for doc, score in filtered[:2]]
+    best_score = results[0][1]
 
-    context = "\n---\n".join([doc.page_content for doc in strong_docs])
+    # Keep only chunks close to best match
+    strong_docs = [
+        doc for doc, score in results
+        if score <= best_score + 0.15
+    ]
+
+    if not strong_docs:
+        return "I cannot find this information in the document."
+
+    context = "\n---\n".join([doc.page_content for doc in strong_docs[:2]])
 
     try:
         response = llm.invoke(
