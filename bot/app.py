@@ -57,11 +57,11 @@ embeddings = HuggingFaceEmbeddings(
 # --------------------------------------------------
 with st.sidebar:
     uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
+
     if st.button("Clear Chat"):
         st.session_state.messages = []
         st.rerun()
 
-# STOP if no PDF uploaded
 if not uploaded_pdf:
     st.info("Upload a PDF to begin.")
     st.stop()
@@ -129,8 +129,7 @@ prompt = ChatPromptTemplate.from_messages([
      "You are a strict document extractor.\n"
      "Use ONLY text from the context.\n"
      "Return ONLY the exact relevant sentences.\n"
-     "Do not combine unrelated sections.\n"
-     "Do not explain.\n"
+     "Do not add explanations.\n"
      "If the answer is not explicitly written, reply exactly:\n"
      "'I cannot find this information in the document.'"
     ),
@@ -142,18 +141,21 @@ prompt = ChatPromptTemplate.from_messages([
 # --------------------------------------------------
 def answer_question(question):
 
-    results = vectorstore.similarity_search_with_score(question, k=2)
+    results = vectorstore.similarity_search_with_score(question, k=3)
 
-    # similarity threshold
+    # Filter by similarity threshold
     filtered = [(doc, score) for doc, score in results if score < 0.6]
 
     if not filtered:
         return "I cannot find this information in the document."
 
-    # use only best matching chunk
+    # Sort by similarity (lower is better)
     filtered = sorted(filtered, key=lambda x: x[1])
-    best_doc = filtered[0][0]
-    context = best_doc.page_content
+
+    # Use top 2 strong chunks max
+    strong_docs = [doc for doc, score in filtered[:2]]
+
+    context = "\n---\n".join([doc.page_content for doc in strong_docs])
 
     try:
         response = llm.invoke(
@@ -167,43 +169,35 @@ def answer_question(question):
     if "cannot find" in answer.lower():
         return "I cannot find this information in the document."
 
-    page = best_doc.metadata.get("page", 0) + 1
+    pages = sorted({doc.metadata.get("page", 0) + 1 for doc in strong_docs})[:3]
 
-    return answer + f"\n\n📄 Source: Page {page}"
+    return answer + f"\n\n📄 Source: Page(s) {', '.join(map(str, pages))}"
 
 # --------------------------------------------------
-# CHAT LOOP (FIXED)
+# CHAT LOOP
 # --------------------------------------------------
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
+# Display history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# User input
 user_input = st.chat_input("Ask a question about the PDF...")
 
 if user_input:
-    # Add user message immediately
+
     st.session_state.messages.append({
         "role": "user",
         "content": user_input
     })
 
-    # Display user message instantly
-    with st.chat_message("user"):
-        st.markdown(user_input)
-
-    # Generate assistant response
     with st.chat_message("assistant"):
         with st.spinner("Searching document..."):
             answer = answer_question(user_input)
             st.markdown(answer)
 
-    # Save assistant message
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer
