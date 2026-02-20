@@ -1,349 +1,187 @@
-import os
-import tempfile
-import hashlib
 import streamlit as st
-from dotenv import load_dotenv
-from typing import List, Tuple
-
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import (
-    HuggingFaceEmbeddings,
-    HuggingFaceEndpoint,
-    ChatHuggingFace,
-)
+import os
+from PyPDF2 import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEndpoint, HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.documents import Document
 from pinecone import Pinecone, ServerlessSpec
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
-st.set_page_config(
-    page_title="PDF Q&A Chatbot",
-    page_icon="📘",
-    layout="wide"
-)
+# --- Page Config ---
+st.set_page_config(page_title="PDF Q&A Bot (Hugging Face)", page_icon="🤗")
+st.title("🤗 PDF Q&A Chatbot (Hugging Face + Pinecone)")
 
-st.title("📘 PDF Q&A Chatbot")
-st.caption("Ask questions and get accurate answers directly from your uploaded document.")
-
-load_dotenv()
-
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-
-INDEX_NAME = "pdf-qa-production"
-EMBEDDING_DIM = 384
-
-# Improved configuration
-CHUNK_SIZE = 1000  # Larger chunks for better context
-CHUNK_OVERLAP = 250  # More overlap for continuity
-TOP_K_RETRIEVAL = 6  # Retrieve more candidates
-TOP_K_CONTEXT = 4  # Use best 4 for context
-SIMILARITY_THRESHOLD = 0.65  # Slightly more permissive threshold
-
-if not PINECONE_API_KEY or not HUGGINGFACE_API_KEY:
-    st.error("❌ Missing API keys. Please check your .env file.")
-    st.stop()
-
-# --------------------------------------------------
-# INIT PINECONE
-# --------------------------------------------------
-@st.cache_resource
-def init_pinecone():
-    """Initialize Pinecone connection and index"""
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    
-    if INDEX_NAME not in [i["name"] for i in pc.list_indexes()]:
-        pc.create_index(
-            name=INDEX_NAME,
-            dimension=EMBEDDING_DIM,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-    
-    return pc, pc.Index(INDEX_NAME)
-
-pc, index = init_pinecone()
-
-# --------------------------------------------------
-# EMBEDDINGS
-# --------------------------------------------------
-@st.cache_resource
-def get_embeddings():
-    """Initialize embeddings model"""
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': True}
-    )
-
-embeddings = get_embeddings()
-
-# --------------------------------------------------
-# SIDEBAR
-# --------------------------------------------------
+# --- Sidebar for API Keys ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    uploaded_pdf = st.file_uploader(
-        "Upload PDF Document",
-        type=["pdf"],
-        help="Upload a PDF file to ask questions about"
-    )
+    st.header("Configuration")
+    hf_token = st.text_input("Hugging Face Token", type="password", help="Get it from huggingface.co/settings/tokens")
+    pinecone_api_key = st.text_input("Pinecone API Key", type="password")
+    pinecone_environment = st.text_input("Pinecone Environment", placeholder="e.g., us-east-1", value="us-east-1")
     
     st.divider()
+    st.markdown("### Models Used")
+    st.markdown("- **Embeddings:** `sentence-transformers/all-MiniLM-L6-v2`")
+    st.markdown("- **LLM:** `mistralai/Mistral-7B-Instruct-v0.2`")
     
-    if st.button("🗑️ Clear Chat History", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-    
-    # Display document info
-    if uploaded_pdf:
-        st.success(f"✅ Loaded: {uploaded_pdf.name}")
-        st.caption(f"Size: {uploaded_pdf.size / 1024:.1f} KB")
+    if st.button("Clear Vector Store"):
+        if pinecone_api_key:
+            try:
+                pc = Pinecone(api_key=pinecone_api_key)
+                pc.Index("pdf-qa-hf").delete(delete_all=True)
+                st.success("Vector store cleared!")
+            except Exception as e:
+                st.error(f"Error: {e}")
+        else:
+            st.warning("Enter Pinecone Key first.")
 
-if not uploaded_pdf:
-    st.info("👈 Upload a PDF document from the sidebar to begin.")
-    st.stop()
+# --- Helper Functions ---
 
-# --------------------------------------------------
-# SAVE PDF & GENERATE HASH
-# --------------------------------------------------
-with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-    tmp.write(uploaded_pdf.read())
-    pdf_path = tmp.name
+def get_pdf_text(pdf_docs):
+    text = ""
+    for pdf in pdf_docs:
+        pdf_reader = PdfReader(pdf)
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+    return text
 
-file_hash = hashlib.md5(open(pdf_path, "rb").read()).hexdigest()
-namespace = file_hash
-
-# --------------------------------------------------
-# BUILD / LOAD VECTORSTORE WITH PROGRESS
-# --------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_vectorstore(_pdf_path: str, _namespace: str) -> PineconeVectorStore:
-    """Load or create vector store with improved chunking"""
-    
-    existing = index.describe_index_stats().get("namespaces", {})
-    
-    # If already indexed, load from Pinecone
-    if _namespace in existing:
-        return PineconeVectorStore.from_existing_index(
-            index_name=INDEX_NAME,
-            embedding=embeddings,
-            namespace=_namespace,
-        )
-    
-    # Otherwise, process the PDF
-    with st.spinner("📄 Processing PDF..."):
-        docs = PyPDFLoader(_pdf_path).load()
-        
-        # Enhanced text splitter
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            length_function=len,
-            separators=["\n\n", "\n", ". ", " ", ""],
-            add_start_index=True,
-        )
-        
-        chunks = splitter.split_documents(docs)
-        
-        # Add metadata
-        for i, chunk in enumerate(chunks):
-            chunk.metadata["chunk_id"] = i
-            chunk.metadata["total_chunks"] = len(chunks)
-        
-        st.info(f"Created {len(chunks)} chunks from {len(docs)} pages")
-        
-        return PineconeVectorStore.from_documents(
-            documents=chunks,
-            embedding=embeddings,
-            index_name=INDEX_NAME,
-            namespace=_namespace,
-        )
-
-vectorstore = load_vectorstore(pdf_path, namespace)
-
-# --------------------------------------------------
-# LLM WITH BETTER CONFIG
-# --------------------------------------------------
-@st.cache_resource
-def get_llm(_temperature: float = 0.0):
-    """Initialize LLM with configurable temperature"""
-    return ChatHuggingFace(
-        llm=HuggingFaceEndpoint(
-            repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-            temperature=_temperature,
-            max_new_tokens=250,
-            top_p=0.9,
-            repetition_penalty=1.15,
-            huggingfacehub_api_token=HUGGINGFACE_API_KEY,
-        )
+def get_text_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
     )
+    chunks = text_splitter.split_text(text)
+    return chunks
 
-llm = get_llm(0.0)
-
-# --------------------------------------------------
-# ENHANCED PROMPT TEMPLATE
-# --------------------------------------------------
-prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are a precise document assistant. Extract exact information from the provided context.
-
-RULES:
-1. Give SHORT, DIRECT answers using only the context provided
-2. Use the exact words from the document when possible
-3. Do NOT mention page numbers, context, or sources in your answer
-4. Do NOT say "according to the context" or "the document states"
-5. If the answer is not in the context, say ONLY: "I cannot find this information in the document."
-6. Do NOT explain, interpret, or add external knowledge
-7. Keep answers under 3 sentences unless absolutely necessary
-
-Just answer the question directly."""
-    ),
-    (
-        "human",
-        """Context:
-{context}
-
-Question: {question}
-
-Answer directly and concisely:"""
-    ),
-])
-
-# --------------------------------------------------
-# IMPROVED ANSWER FUNCTION
-# --------------------------------------------------
-def answer_question(question: str, k_retrieval: int = 5, k_context: int = 3) -> str:
-    """
-    Generate answer with improved retrieval and context assembly
-    """
+def get_vectorstore(text_chunks, hf_token, pinecone_key, pinecone_env):
+    # 1. Initialize Embeddings (Local Sentence Transformers)
+    # Model dimension is 384
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     
-    if not question.strip():
-        return "Please ask a valid question."
+    # 2. Initialize Pinecone
+    pc = Pinecone(api_key=pinecone_key)
+    index_name = "pdf-qa-hf"
     
-    try:
-        # Retrieve relevant chunks with scores
-        results = vectorstore.similarity_search_with_score(question, k=k_retrieval)
-        
-        if not results:
-            return "I cannot find this information in the document."
-        
-        # Filter by similarity threshold (lower score = more similar)
-        # Note: Pinecone cosine distance ranges from 0 (identical) to 2 (opposite)
-        filtered_results = [(doc, score) for doc, score in results if score < SIMILARITY_THRESHOLD]
-        
-        if not filtered_results:
-            return "I cannot find sufficiently relevant information in the document to answer this question."
-        
-        # Sort by similarity (lower score = better)
-        sorted_results = sorted(filtered_results, key=lambda x: x[1])
-        
-        # Take top k_context chunks
-        top_docs = [doc for doc, score in sorted_results[:k_context]]
-        
-        # Build context without page labels (we'll add them to citation only)
-        context_parts = []
-        for doc in top_docs:
-            content = doc.page_content.strip()
-            context_parts.append(content)
-        
-        context = "\n\n".join(context_parts)
-        
-        # Generate answer
-        response = llm.invoke(
-            prompt.format(context=context, question=question)
+    # 3. Create Index if not exists (Dimension MUST match embedding model: 384)
+    if index_name not in pc.list_indexes().names():
+        pc.create_index(
+            name=index_name,
+            dimension=384, 
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region=pinecone_env)
         )
-        
-        answer = response.content.strip()
-        
-        # Remove common LLM artifacts
-        answer = answer.replace("According to the context,", "").strip()
-        answer = answer.replace("According to the document,", "").strip()
-        answer = answer.replace("Based on the context,", "").strip()
-        answer = answer.replace("The document states that", "").strip()
-        answer = answer.replace("The context mentions that", "").strip()
-        
-        # Check if model couldn't find answer
-        if any(phrase in answer.lower() for phrase in [
-            "cannot find",
-            "not mentioned",
-            "does not contain",
-            "no information",
-            "not in the context"
-        ]):
-            return "I cannot find this information in the document."
-        
-        # Add source citations
-        pages = sorted(set(doc.metadata.get("page", 0) + 1 for doc in top_docs))
-        page_str = ", ".join(map(str, pages[:5]))  # Limit to 5 pages
-        
-        return f"{answer}\n\n📄 **Source:** Page {page_str}"
     
-    except Exception as e:
-        st.error(f"Error generating answer: {str(e)}")
-        return "An error occurred while processing your question. Please try rephrasing or try again."
-
-# --------------------------------------------------
-# CHAT INTERFACE WITH IMPROVEMENTS
-# --------------------------------------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Chat input
-user_input = st.chat_input("Ask a question about the PDF...", key="user_input")
-
-if user_input:
-    # Display user message
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    # 4. Upsert to Pinecone
+    PineconeVectorStore.from_texts(
+        texts=text_chunks,
+        embedding=embeddings,
+        index_name=index_name,
+        pinecone_api_key=pinecone_key
+    )
     
-    # Store user message
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    
-    # Generate and display answer
-    with st.chat_message("assistant"):
-        with st.spinner("Searching document..."):
-            answer = answer_question(
-                user_input,
-                k_retrieval=TOP_K_RETRIEVAL,
-                k_context=TOP_K_CONTEXT
-            )
-        st.markdown(answer)
-    
-    # Store assistant response
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    vectorstore = PineconeVectorStore(
+        index_name=index_name,
+        embedding=embeddings,
+        pinecone_api_key=pinecone_key
+    )
+    return vectorstore
 
-# --------------------------------------------------
-# FOOTER WITH TIPS
-# --------------------------------------------------
-with st.expander("💡 Tips for Better Results"):
-    st.markdown("""
-    - **Be specific**: Ask clear, focused questions
-    - **Use keywords**: Include terms likely to appear in the document
-    - **Break it down**: Split complex questions into simpler ones
-    - **Check sources**: Review the cited page numbers for context
-    - **Rephrase**: If you don't get a good answer, try asking differently
+def get_conversation_chain(vectorstore, hf_token):
+    # 1. Initialize LLM via Hugging Face Inference API
+    repo_id = "mistralai/Mistral-7B-Instruct-v0.2"
     
-    **Example questions:**
-    - "What is the main conclusion of this document?"
-    - "What methodology was used in the study?"
-    - "What are the key findings on page 5?"
-    """)
+    llm = HuggingFaceEndpoint(
+        repo_id=repo_id,
+        max_new_tokens=512,
+        temperature=0.1,
+        huggingfacehub_api_token=hf_token
+    )
+    
+    # 2. Strict Prompt for PDF Only Answers
+    system_prompt = (
+        "You are an assistant for question-answering tasks. "
+        "Use the following pieces of retrieved context from the PDF to answer the question. "
+        "If you don't know the answer based on the context, say 'I don't have enough information in the document to answer that'. "
+        "Do not use your own general knowledge."
+        "\n\n"
+        "{context}"
+    )
+    
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            ("human", "{input}"),
+        ]
+    )
+    
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    retriever = vectorstore.as_retriever()
+    chain = create_retrieval_chain(retriever, question_answer_chain)
+    
+    return chain
 
-# Clean up temp file on session end
-if st.session_state.get("cleanup_needed", False):
-    try:
-        os.unlink(pdf_path)
-    except:
-        pass
+# --- Main App Logic ---
+
+def main():
+    if "vectorstore" not in st.session_state:
+        st.session_state.vectorstore = None
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "processed" not in st.session_state:
+        st.session_state.processed = False
+
+    pdf_docs = st.file_uploader("Upload your PDF files", accept_multiple_files=True, type=['pdf'])
+
+    if st.button("Submit & Process"):
+        if not hf_token or not pinecone_api_key:
+            st.error("Please provide Hugging Face Token and Pinecone Key in the sidebar.")
+        elif not pdf_docs:
+            st.warning("Please upload at least one PDF.")
+        else:
+            with st.spinner("Processing PDFs (Embeddings & Pinecone)..."):
+                try:
+                    raw_text = get_pdf_text(pdf_docs)
+                    text_chunks = get_text_chunks(raw_text)
+                    
+                    st.session_state.vectorstore = get_vectorstore(
+                        text_chunks, 
+                        hf_token, 
+                        pinecone_api_key, 
+                        pinecone_environment
+                    )
+                    
+                    st.session_state.processed = True
+                    st.success("PDF processed! Ready to chat.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    if st.session_state.processed and st.session_state.vectorstore:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        if prompt := st.chat_input("Ask about the PDF..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        chain = get_conversation_chain(st.session_state.vectorstore, hf_token)
+                        response = chain.invoke({"input": prompt})
+                        answer = response["answer"]
+                        
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                    except Exception as e:
+                        st.error(f"Error generating response: {e}")
+                        st.info("Tip: Hugging Face Inference API might be busy. Try again in a moment.")
+
+    elif not st.session_state.processed:
+        st.info("👈 Upload a PDF and click 'Submit & Process' to start.")
+
+if __name__ == '__main__':
+    main()
